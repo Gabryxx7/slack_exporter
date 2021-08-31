@@ -1,0 +1,13 @@
+SLACK_BOT_TOKEN: "xoxp-123abvcsafas-xxxxx-xxxxxx-..."
+10_dim_url: "http://127.0.0.1:5000/tenDimensions"
+timeframe:
+  from: 2021-01-01
+  to: 2021-02-02
+public_channels_file: public_channels.csv
+private_channels_file: private_channels.csv
+group_messages_file: group_messages.csv
+logger_name: slack_bot_log.log
+rate_limit: 80
+wait_time: 10
+retry_delay: 5
+data_folder : "F:\\Cloud\\Dropbox_giaga\\Dropbox\\intern21_gabriele\\data\\Slack_Export"
