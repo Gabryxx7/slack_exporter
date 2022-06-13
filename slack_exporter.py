@@ -64,7 +64,11 @@ class SlackCSVWriter():
                 self.csv_writer.writerows(data)
             else:
                 self.csv_writer.writerows(formatter(data, **kwargs))
+            self.file.flush()
     
+    def close(self):
+        self.file.close()
+        
     def dt_to_ts(datetime_str):
         # datetime_str = '2018-06-29 08:15:27.243860'
         datetime_obj = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
@@ -147,9 +151,6 @@ class SlackCSVWriter():
         else:
             rows.append(prefix + [member,user_name])
         return rows
-
-    def close(self):
-        self.file.close()
         
 
 class SlackExporter():
