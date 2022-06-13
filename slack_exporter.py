@@ -52,14 +52,103 @@ class SlackCSVWriter():
             self.csv_writer.writerow(headers)  
             self.initialized = True
 
-    def write_data(self, data_list, headers=None):
-        self.init(headers)
+    def close(self):
+        self.file.close()
+
+
+    def write_data(self, data_list, formatter=None, **kwargs):
         if not isinstance(data_list, list):
             data_list = [data_list]
         for data in data_list:
-            self.csv_writer.writerow(data.values())
+            if formatter is None:
+                self.csv_writer.writerows(data)
+            else:
+                self.csv_writer.writerows(formatter(data, **kwargs))
+    
+    def dt_to_ts(datetime_str):
+        # datetime_str = '2018-06-29 08:15:27.243860'
+        datetime_obj = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
+        return datetime.timestamp(datetime_obj)
 
-    def close():
+    def ts_to_dt(ts):
+        return datetime.fromtimestamp(float(ts)).strftime('%Y-%m-%d %H:%M:%S')
+        
+    def format_message(message, users_list=None, prefix=None):
+        prefix = prefix if prefix != None else []
+        users_list = users_list if users_list != None else []
+        rows = []
+        try:
+            row = []
+            # row.append(message["message_id"])
+            try:
+                row.append(message["subtype"])
+            except Exception as e:
+                row.append("None")
+            row.append(message["text"])
+            try:
+                row.append(message["user"])
+            except Exception as e:
+                row.append("None")
+            try:
+                row.append(users_list.get(user, "None"))
+            except:
+                row.append("None")
+            row.append(message["ts"])
+            row.append(SlackCSVWriter.ts_to_dt(message["ts"]))
+            # print(f"{self.ts_to_dt(message['ts'])}\t{message['client_msg_id']}\t{message['type']}\t{message['user']}\t{message['team']}\t{message['text']}")
+            rows.append(prefix+row)
+        except Exception as e:
+            print(f"error while writing to file: {e}")
+        return rows
+
+    def format_reaction(reaction, users_list=None, prefix=None):
+        prefix = prefix if prefix != None else []
+        users_list = users_list if users_list != None else []
+        rows = []
+        for user in reaction["users"]:
+            try:
+                row = []
+                try:
+                    row.append(reaction["name"])
+                except Exception as e:
+                    row.append("None")
+                try:
+                    row.append(user)
+                except Exception as e:
+                    row.append("None")            
+                try:
+                    row.append(users_list.get(user, "None"))
+                except:
+                    row.append("None")
+                # print(f"{self.ts_to_dt(message['ts'])}\t{message['client_msg_id']}\t{message['type']}\t{message['user']}\t{message['team']}\t{message['text']}")
+                rows.append(prefix+msg_prefix+row)
+            except Exception as e:
+                print(f"Error while writing to file: {e}")
+        return rows
+
+    def format_member(member, users_list=None, as_graph=False, prefix=None):      
+        prefix = prefix if prefix != None else []
+        users_list = users_list if users_list != None else []
+        rows = []
+        user_name = "None"
+        try:
+            user_name = users_list.get(user, "None")
+        except Exception as e:
+            print(f"Error getting {member} user_name: {e}")
+
+        if as_graph:
+            for p_member in members:
+                p_user_name = "None"
+                try:
+                    p_user_name = users_list[p_member]
+                except Exception as e:
+                    print(f"Error getting second user {p_user_name} user_name: {e}")
+                rows.append(prefix + [member, user_name, p_member, p_user_name])
+        else:
+            rows.append(prefix + [member,user_name])
+        return rows
+
+    def close(self):
         self.file.close()
         
 
@@ -95,7 +184,10 @@ class SlackExporter():
         self.logger = logging.getLogger(self.logger_name)
         self.calls_counter = 0
         self.started_time = datetime.now()
-        self.processed_counter = 0                
+        self.processed_counter = 0
+        self.users_list = None
+        self.folder_created = False
+        self.get_users_list()          
 
     def make_folder(self):
         if self.folder_created:
@@ -105,12 +197,12 @@ class SlackExporter():
                 os.makedirs(self.base_path)
             self.base_path += "\\"
         # Put users into the dict
-    def users_to_dict(users_array):
+    def users_to_dict(self, users_array):
         for user in users_array:
             # Key user info on their unique user ID
             user_id = user["id"]
             # Store the entire user object (you may not need all of the info)
-            users_list[user_id] = user["name"]
+            self.users_list[user_id] = user["name"]
 
     def read_users_list(self, filename, id_col=None, username_col=None):
         csv_users_file = filename
@@ -131,21 +223,21 @@ class SlackExporter():
         if csv_users_file is None:
             csv_users_file = "slack_users_list.csv"
         print(f"Downloading user dictionary to {csv_users_file}")
-        users_list = {}
+        self.users_list = {}
         try:
             result = self.client.users_list()
-            users_to_dict(result["members"])
+            self.users_to_dict(result["members"])
             try:
                 with open(csv_users_file, 'w', newline='') as csvfile:
                     csvwriter = csv.writer(csvfile, delimiter=',')
                     csvwriter.writerow(["user_id", "user_name"])
-                    for key, value in users_list.items():
+                    for key, value in self.users_list.items():
                         csvwriter.writerow([key, value])
             except IOError as e:
                 print(f"Error writing users file: {e}")
         except SlackApiError as e:
             self.logger.error("Error creating conversation: {}".format(e))
-        return users_list
+        return self.users_list
         
     def get_conversation_by_id(self, channel_id, conversations):
         res = next(filter(lambda x: 'id' in x and channel_id == x['id'], conversations), None)
@@ -157,7 +249,7 @@ class SlackExporter():
 
     def get_users_list(self):
         if self.users_list is None:
-            update_users_list()
+            self.update_users_list()
         return self.users_list
         
     def dt_to_ts(self, datetime_str):
@@ -207,14 +299,14 @@ class SlackExporter():
             data_list.append(res)
         return data_list
 
-    def get_data(self, client_method, client_args, response_key = None, data_keys = None, limit=200):
+    def get_data(self, client_method, client_args, response_key = None, data_keys = None, limit=200, processed=-1, total=-1):
         data_list = []
         method_name = client_method.__name__
         try:
+            cursor = None
             while True:
                 # Call the conversations.list method using the WebClient
                 rate, elapsed = self.check_rate_limit(self.started_time, self.rate_limit, self.rate_limit_wait)
-                cursor = None
                 try:
                     result = client_method(**client_args, limit=limit, cursor=cursor )
                     # result = self.client.conversations_list(types="public_channel,private_channel,mpim,im", limit=200, cursor=cursor)
@@ -223,13 +315,21 @@ class SlackExporter():
                     print(f"Exception getting request {method_name}: {e}.\t Retrying in {self.retry_delay}")
                     self.retry_wait(self.retry_delay, f"Trying again in")
                     continue
-                data_list = self.get_data_list(result, response_key, data_keys)
-                try:
-                    cursor = result["response_metadata"]["next_cursor"]
-                except Exception as e:
-                    pass
+                new_data = self.get_data_list(result, response_key, data_keys)  
+                self.logger.info(new_data)
+                # print(new_data[0])
+                # print(new_data[0]["id"], new_data[-1]["id"])
+                data_list += new_data
+                if "response_metadata" in result:
+                    cursor = result["response_metadata"].get("next_cursor", None)
+                else:
+                    cursor = None
                     # print(f"Exception getting conversations: {e}\t {len(convos)}")
-                print(f"Total data: {len(data_list)} \t Cursor: {cursor}\tRate: {rate:.2f}\{self.rate_limit} \tElapsed: {elapsed}")
+                if processed > 0 and total > 0:
+                    print(f"{processed:>4}/{total:<4}", end="")
+                else:                    
+                    print(f"{'-':>4}/{'-':<4}", end="")
+                print(f"{client_method.__name__:15}\t Total data: {len(data_list):<4} \t Cursor: {str(cursor):<10}\tRate: {rate:>2.2f}\{self.rate_limit:<3} \tElapsed: {elapsed} \tArgs: {client_args}")
                 if cursor is None or cursor == "":
                     break
             return data_list        
@@ -243,205 +343,137 @@ class SlackExporter():
     """
     channel_id: ID of the channel you want to send the message to
     """
-    def get_conversation_history(self, conversation, data_keys=None, **kwargs):
+    def get_conversation_history(self, conversation, data_keys=None, processed=-1, total=-1, **kwargs):
         channel_id = conversation["id"]
-        print(f"ID2: {channel_id}")
+        # print(f"ID2: {channel_id}")
         client_args={"channel":channel_id}
         # Call the conversations.history method using the WebClient
         # conversations.history returns the first 100 messages by default
         # These results are paginated, see: https://api.slack.com/methods/conversations.history$pagination
-        messages = self.get_data(self.client.conversations_history, client_args, response_key="messages", data_keys=data_keys)
+        messages = self.get_data(self.client.conversations_history, client_args, response_key="messages", data_keys=data_keys, processed=processed, total=total)
         self.logger.info(f"{len(messages)} messages found in {channel_id}")
         return messages
 
     
-    def get_conversation_members(self, conversation, data_keys=None, get_user_info=True, **kwargs):
+    def get_conversation_members(self, conversation, data_keys=None, get_user_info=True, processed=-1, total=-1, **kwargs):
         channel_id = conversation["id"]
         client_args={"channel":channel_id}
-        members = self.get_data(self.client.conversations_members, client_args, response_key="members", data_keys=data_keys)
+        members = self.get_data(self.client.conversations_members, client_args, response_key="members", data_keys=data_keys, processed=processed, total=total)
         self.logger.info(f"{len(members)} members in {channel_id}")
         if get_user_info:
             members = self.get_users_info(members)
 
         return members
     
-    def get_message_reactions(self, channel_id, msg_timestamp, data_keys=None, **kwargs):
+    def get_message_reactions(self, channel_id, msg_timestamp, data_keys=None, processed=-1, total=-1, **kwargs):
         channel_id = conversation["id"]
         client_args={"channel":channel_id, "timestamp":msg_timestamp}
-        reactions = self.get_data(self.client.reactions_get, client_args, response_key="message", data_keys=data_keys)
+        reactions = self.get_data(self.client.reactions_get, client_args, response_key="message", data_keys=data_keys, processed=processed, total=total)
         self.logger.info(f"{len(reactions)} members in {channel_id}")
         return reactions
     
     def get_users_info(self, users_id_list, data_keys=None):
         users_data = []
-        for user_id in users_id_list:
+        for idx, user_id in enumerate(users_id_list):
             client_args = {"user":user_id}
-            users_data.append(self.get_data(self.client.users_info, client_args, response_key="user", data_keys=data_keys))
+            users_data.append(self.get_data(self.client.users_info, client_args, response_key="user", data_keys=data_keys, processed=idx+1, total=len(users_id_list)))
         return users_data
 
-    def print_conversations_list(convos):
+    def print_conversations_list(self, convos):
         for conversation in convos:
             # print(conversation)
             try:
-                name = self.get_conversation_name(conversation, users_list=users_list)
+                name = self.get_conversation_name(conversation, users_list=self.users_list)
                 type = self.get_conversation_type_string(conversation)
-                # print(f"{name}\t{type}")
+                print(f"{name}\t{type}")
             except KeyError as e:
                 print(f"KeyError in retreiving key: {e}")
+    
+    def get_conversation_type_string(self, conversation):
+        convo_type = ""
+        if "is_channel" in conversation.keys() and conversation["is_channel"]:
+            if conversation["is_private"]:
+                convo_type = "private channel"
+            else:
+                convo_type = "public_channel"
+        elif "is_group" in conversation.keys() and conversation["is_group"]:
+            convo_type = "group"
+        elif "is_im" in conversation.keys() and conversation["is_im"]:
+            convo_type = "im"
+        elif "is_mpim" in conversation.keys() and conversation["is_mpim"]:
+            convo_type = "mpim"
+        # elif conversation["is_group"]:
+        #     convo_type = "group"
+        return convo_type
 
-    def write_messages(self,messages, csvwriter, reactions_csv_writer=None, prefix=None):
-        prefix = prefix if prefix != None else []
-        elapsed = (datetime.now() - started_time)
-        elapsed_mins = elapsed.seconds // 60 % 60
-        calls_per_min = "-"
-        if elapsed_mins > 0:
-            calls_per_min = self.calls_counter/elapsed_mins
-            wait_time = 10
-            while calls_per_min > rate_limit:
-                print(f"Elapsed: {elapsed}, Calls: {self.calls_counter}, Rate: {calls_per_min:.2f}pm, Waiting {wait_time} seconds...")
-                for t in range(0,wait_time):
-                    time.sleep(1)
-                    print(f"Elapsed: {elapsed}, Calls: {self.calls_counter}, Rate: {calls_per_min:.2f}pm, Waiting {wait_time-t} seconds...", end="\r", flush=True)
-                elapsed_mins = (datetime.now() - started_time).seconds // 60 % 60
-                calls_per_min = self.calls_counter/elapsed_mins
-            
-        print(f"Elapsed: {elapsed}, Calls: {self.calls_counter}, Rate: {calls_per_min:.2f}pm, Exporting {len(messages)} messages for: {prefix}")
-        for message in messages:
-            write_message(message, csvwriter, prefix)
-            if reactions_csv_writer is not None:
-                export_message_reactions(prefix[0], message, reactions_csv_writer, prefix)
-
-
-    def write_message(self,message, csvwriter, prefix=None):
-        prefix = prefix if prefix != None else []
+    def get_conversation_name(self, conversation, users_list=None):
+        convo_name = ""
         try:
-            row = []
-            # row.append(message["message_id"])
-            try:
-                row.append(message["subtype"])
-            except Exception as e:
-                row.append("None")
-            row.append(message["text"])
-            try:
-                row.append(message["user"])
-            except Exception as e:
-                row.append("None")
-            try:
-                row.append(users_list[message["user"]])
-            except:
-                row.append("None")
-            row.append(message["ts"])
-            row.append(self.ts_to_dt(message["ts"]))
-            # print(f"{self.ts_to_dt(message['ts'])}\t{message['client_msg_id']}\t{message['type']}\t{message['user']}\t{message['team']}\t{message['text']}")
-            csvwriter.writerow(prefix+row)
-        except Exception as e:
-            print(f"error while writing to file: {e}")
+            convo_name = conversation["name"]
+        except KeyError as e:
+            convo_name = conversation["user"]
+            if users_list:
+                convo_name = users_list[conversation["user"]]
+        return convo_name
 
-    def write_reactions(self,reactions, message, csvwriter, prefix=None):
-        prefix = prefix if prefix != None else []
-        msg_prefix = []
-        msg_prefix.append(message["ts"])
-        msg_prefix.append(self.ts_to_dt(message["ts"]))
-        # print("Exporting {} reactions for: {}".format(len(reactions), msg_prefix))
-        for reaction in reactions:
-            write_reaction(reaction, csvwriter, prefix+msg_prefix)
-            
-    def write_reaction(self,reaction, csvwriter, prefix=None):
-        prefix = prefix if prefix != None else []
-        for user in reaction["users"]:
-            try:
-                row = []
-                try:
-                    row.append(reaction["name"])
-                except Exception as e:
-                    row.append("None")
-                try:
-                    row.append(user)
-                except Exception as e:
-                    row.append("None")            
-                try:
-                    row.append(users_list[user])
-                except:
-                    row.append("None")
-                # print(f"{self.ts_to_dt(message['ts'])}\t{message['client_msg_id']}\t{message['type']}\t{message['user']}\t{message['team']}\t{message['text']}")
-                csvwriter.writerow(prefix+row)
-            except Exception as e:
-                print(f"Error while writing to file: {e}")
 
-    def write_members(self,members, as_graph, csvwriter, prefix=None):
-        prefix = prefix if prefix != None else []
-        print("Exporting {} members for: {}".format(len(members), prefix))
-        for member in members:
-            write_member(member, as_graph, members, csvwriter, prefix)
-
-    def write_member(self,member, as_graph, members, csvwriter, prefix=None):
-        user_name = "None"
-        try:
-            user_name = users_list[member]
-        except Exception as e:
-            print(f"Error getting {member} user_name: {e}")
-
-        if as_graph:
-            for p_member in members:
-                p_user_name = "None"
-                try:
-                    p_user_name = users_list[p_member]
-                except Exception as e:
-                    print(f"Error getting second user {p_user_name} user_name: {e}")
-                csvwriter.writerow(prefix + [member, user_name, p_member, p_user_name])
-        else:
-            csvwriter.writerow(prefix + [member,user_name])
-
-    def export_message_reactions(self,conversation_id, message, reactions_csv_writer, convo_info_prefix, **kwargs):
-        # msg_reactions = get_message_reactions(conversation_id, message["ts"])
-        if "reactions" in message:
-            msg_reactions = message["reactions"]
-            if msg_reactions is not None:
-                write_reactions(msg_reactions, message, csvwriter=reactions_csv_writer, prefix=convo_info_prefix)
-
-    def export_conversation_members(self,conversation, as_graph=True, csv_writer=None):
-        convo_name = self.get_conversation_name(conversation, users_list=users_list)
-        members = get_conversation_members(conversation)
-        csvwriter = csv_writer
-        if csvwriter is None:
-            f_members, csvwriter = init_members_csv_writer(convo_name)
-        convo_info_prefix = [conversation["id"], convo_name, self.get_conversation_type_string(conversation)]
-        write_members(members, as_graph, csvwriter=csvwriter, prefix=convo_info_prefix)
-        if csv_writer is None:  # if we created a new writer inside here then we need to close the file at the end
-            print(f"------- EXPORT {os.path.basename(f_members.name)} COMPLETED AT {self.formatted_now()} -------")
-            f_members.close()
-
-    def export_conversation_history(self, conversations):
+    def export_conversation_data(self, conversations, export_messages=True, export_messages_reactions=False, export_members=False, members_as_graph=False):
+        self.make_folder()
+        members_filename = f"{self.base_path}members_all_{self.config['last_export_time']}.csv"
+        messages_filename = f"{self.base_path}messages_all_{self.config['last_export_time']}.csv"
+        reactions_filename = f"{self.base_path}reactions_all_{self.config['last_export_time']}.csv"
         if not isinstance(conversations, list):
-            convo_name = self.get_conversation_name(conversation, users_list=users_list)
+            convo_name = self.get_conversation_name(conversations, users_list=self.users_list)
             conversations = [conversations]
-            messages_csv = SlackCSVWriter(convo_name)
-            reactions_csv = SlackCSVWriter(convo_name)
-        else:
+            members_filename = f"{self.base_path}{convo_name}_members_{self.config['last_export_time']}.csv"
+            messages_filename = f"{self.base_path}{convo_name}_messages_{self.config['last_export_time']}.csv"
+            reactions_filename = f"{self.base_path}{convo_name}_reactions_{self.config['last_export_time']}.csv"
+    
+        if export_members:
+            headers = ["convo_id", "convo_name", "convo_type", "user_id","user_name"]
+            if members_as_graph:
+                headers += ["user_id2","user_name2"]
+            members_csv = SlackCSVWriter(members_filename, headers)
+        if export_messages:
+            headers = ["convo_id", "convo_name", "convo_type", "msg_subtype", "msg_text", "msg_user_id", "msg_user_name", "msg_timestamp", "msg_datetime"]
+            messages_csv = SlackCSVWriter(messages_filename, headers)
+            if export_messages_reactions:
+                headers = ["convo_id", "convo_name", "convo_type", "msg_timestamp", "msg_datetime", "reaction_name", "reaction_user", "reaction_username"]
+                reactions_csv = SlackCSVWriter(reactions_filename, headers)
 
-        for conversation in conversations:
-            messages = get_conversation_history(conversation, limit=200)
+        for idx_c, conversation in enumerate(conversations):
+            total=len(conversations)        
+            processed=idx_c+1            
+            conversation_id = conversation["id"]
+            convo_info_prefix = [conversation_id, convo_name, self.get_conversation_type_string(conversation)]
+            if export_members:
+                members = self.get_conversation_members(conversation, processed=processed, total=total)
+                members_csv.write_data(members, SlackCSVWriter.format_member, users_list=self.users_list, as_graph=members_as_graph, prefix=convo_info_prefix)
+            if export_messages:
+                messages = self.get_conversation_history(conversation, limit=200, processed=processed, total=total)
+                for idx_m, message in enumerate(messages):
+                    total=len(messages)
+                    processed=idx_m+1
+                    messages_csv.write_data(message, SlackCSVWriter.format_message, users_list=self.users_list, prefix=convo_info_prefix)
+                    if export_messages_reactions:
+                        msg_reactions = self.get_message_reactions(conversation_id, message["ts"], processed=processed, total=total)
+                        if "reactions" in message:
+                            msg_reactions = message["reactions"]
+                            if msg_reactions is not None:
+                                msg_prefix = []
+                                msg_prefix.append(message["ts"])
+                                msg_prefix.append(self.ts_to_dt(message["ts"]))
+                                reactions_csv.write_data(msg_reactions, SlackCSVWriter.format_reaction, prefix=convo_info_prefix+msg_prefix)
+            if export_members:
+                print(f"------- MEMBERS EXPORT {os.path.basename(members_filename)} COMPLETED AT {self.formatted_now()} -------")
+                members_csv.close()
+            if export_messages:
+                print(f"------- MESSAGES EXPORT {os.path.basename(messages_filename)} COMPLETED AT {self.formatted_now()} -------")
+                messages_csv.close()
+            if export_messages_reactions:
+                print(f"------- REACTIONS EXPORT {os.path.basename(reactions_filename)} COMPLETED AT {self.formatted_now()} -------")
+                reactions_csv.close()
 
-
-    def export_conversation_history(self,conversation, csv_writer=None, export_reactions=True, reactions_csv_writer=None, messages=None, **kwargs):
-        convo_name = self.get_conversation_name(conversation, users_list=users_list)
-        if messages == None:
-            messages = get_conversation_history(conversation, limit=200)
-        csvwriter = csv_writer
-        reactions_csvwriter = reactions_csv_writer
-        if csvwriter is None:
-            f, csvwriter = init_csv_writer(convo_name)
-            if export_reactions is None:
-                f_reactions, reactions_csvwriter = init_reactions_csv_writer(convo_name)
-
-        convo_info_prefix = [conversation["id"], convo_name, self.get_conversation_type_string(conversation)]
-        write_messages(messages, csvwriter=csvwriter, reactions_csv_writer=reactions_csvwriter, prefix=convo_info_prefix)
-        if csv_writer is None:  # if we created a new writer inside here then we need to close the file at the end
-            print(f"------- EXPORT {os.path.basename(f.name)} COMPLETED AT {self.formatted_now()} -------")
-            f.close()
-            if export_reactions:
-                print(f"------- REACTIONS EXPORT {os.path.basename(f_reactions.name)} COMPLETED AT {self.formatted_now()} -------")
-            f_reactions.close()
         
     def export_all_conversations_history(self,conversations, export_reactions=True, multi_threaded=True, **kwargs):
         print("Exporting {} conversations".format(len(conversations)))
@@ -453,7 +485,7 @@ class SlackExporter():
             with concurrent.futures.ThreadPoolExecutor() as executor: # optimally defined number of threads
                 res = []
                 for i in range(0, len(conversations)):
-                    res.append(executor.submit(export_conversation_history, conversations[i], csv_writer=csvwriter, export_reactions=True, reactions_csv_writer=reactions_csvwriter, messages=None, **kwargs))
+                    res.append(executor.submit(self.export_conversation_history, conversations[i], csv_writer=csvwriter, export_reactions=True, reactions_csv_writer=reactions_csvwriter, messages=None, **kwargs))
                     if i > 0 and i % rate_limit == 0:
                         concurrent.futures.wait(res)
                         print(f"Waiting for the rate-limit of {i} every {sleep_time} seconds...")
@@ -462,55 +494,11 @@ class SlackExporter():
                             time.sleep(1)
         else:
             for conversation in conversations:
-                export_conversation_history(conversation, csv_writer=csvwriter, export_reactions=True, reactions_csv_writer=reactions_csvwriter, messages=None, **kwargs)
+                self.export_conversation_history(conversation, csv_writer=csvwriter, export_reactions=True, reactions_csv_writer=reactions_csvwriter, messages=None, **kwargs)
         print(f"------- EXPORT {os.path.basename(f.name)} COMPLETED AT {self.formatted_now()} -------")
         print(f"------- REACTIONS EXPORT {os.path.basename(f_reactions.name)} COMPLETED AT {self.formatted_now()} -------")
         f.close()
         f_reactions.close()
-
-    def export_all_conversations_members(self, conversations, as_graph=True, **kwargs):
-        print("Exporting {} conversation members".format(len(conversations)))  
-        f_members, csvwriter = init_members_csv_writer()
-        for conversation in conversations:
-            export_conversation_members(conversation, as_graph, csv_writer=csvwriter, **kwargs)
-        print(f"------- EXPORT {os.path.basename(f_members.name)} COMPLETED AT {self.formatted_now()} -------")
-        f_members.close()
-
-
-    def init_members_csv_writer(self,convo_name=None, as_graph=True):
-        self.make_folder()
-        filename = f"{self.base_path}slack_members_export_{config['last_export_time']}.csv"
-        if convo_name is not None:
-            filename = f"{self.base_path}slack_{convo_name}_members_export_{config['last_export_time']}.csv"
-
-        f = open(filename, 'w', newline='', encoding='utf-8')
-        print(f"Initialized file {filename}")
-        csvwriter = csv.writer(f, delimiter=',', quoting=csv.QUOTE_ALL)
-        headers = ["convo_id", "convo_name", "convo_type", "user_id","user_name"]
-        if as_graph:
-            headers += ["user_id2","user_name2"]
-        csvwriter.writerow(headers)     # header
-        return f, csvwriter
-
-    def init_csv_writer(self,convo_name=None):
-        self.make_folder()
-        filename = f"{self.base_path}slack_export_{config['last_export_time']}.csv"
-        if convo_name is not None:
-            filename = f"{self.base_path}slack_{convo_name}_export_{config['last_export_time']}.csv"
-
-        f = open(filename, 'w', newline='', encoding='utf-8')
-        csvwriter = csv.writer(f, delimiter=',', quoting=csv.QUOTE_ALL)
-        csvwriter.writerow(["convo_id", "convo_name", "convo_type", "msg_subtype", "msg_text", "msg_user_id", "msg_user_name", "msg_timestamp", "msg_datetime"])     # header
-        return f, csvwriter
-
-    def init_reactions_csv_writer(self,convo_name=None):
-        reactions_filename = f"{self.base_path}slack_reactions_export_{config['last_export_time']}.csv"
-        if convo_name is not None:
-            reactions_filename = f"{self.base_path}slack_{convo_name}_reactions_export_{config['last_export_time']}.csv"
-        f = open(reactions_filename, 'w', newline='', encoding='utf-8')
-        csvwriter = csv.writer(f, delimiter=',', quoting=csv.QUOTE_ALL)
-        csvwriter.writerow(["convo_id", "convo_name", "convo_type", "msg_timestamp", "msg_datetime", "reaction_name", "reaction_user", "reaction_username"])     # header
-        return f, csvwriter
 
     def export_all(self):
         print(f"Exporting All data:")
