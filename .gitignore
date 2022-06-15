@@ -1,5 +1,3 @@
-
-config.yaml
 *.csv
 *.pyc
-config.yaml
+*nocommit*

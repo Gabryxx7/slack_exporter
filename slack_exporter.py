@@ -68,7 +68,7 @@ class SlackCSVWriter():
     
     def close(self):
         self.file.close()
-        
+
     def dt_to_ts(datetime_str):
         # datetime_str = '2018-06-29 08:15:27.243860'
         datetime_obj = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
@@ -302,6 +302,7 @@ class SlackExporter():
 
     def get_data(self, client_method, client_args, response_key = None, data_keys = None, limit=200, processed=-1, total=-1):
         data_list = []
+        result = {}
         method_name = client_method.__name__
         try:
             cursor = None
@@ -314,8 +315,12 @@ class SlackExporter():
                     self.calls_counter += 1
                 except Exception as e:
                     print(f"Exception getting request {method_name}: {e}.\t Retrying in {self.retry_delay}")
-                    self.retry_wait(self.retry_delay, f"Trying again in")
-                    continue
+                    if 'error' in result and result['error'] == 'account_inactive':
+                        raise SlackApiError()
+                        return
+                    else:
+                        self.retry_wait(self.retry_delay, f"Trying again in")
+                        continue
                 new_data = self.get_data_list(result, response_key, data_keys)  
                 self.logger.info(new_data)
                 # print(new_data[0])
